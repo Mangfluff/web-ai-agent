@@ -86,6 +86,8 @@ Examples:
                         help="Debug mode - show detailed decision process")
     parser.add_argument("--save", "-s", action="store_true",
                         help="Save results to a file")
+    parser.add_argument("--cookie",
+                        help="Cookie file path for session persistence (default: .cookies.json)")
     return parser.parse_args()
 
 
@@ -105,7 +107,8 @@ async def run_task(task: str, args) -> str:
         base_url=args.base_url,
         model=args.model,
     )
-    browser = BrowserController(headless=headless)
+    cookie_file = args.cookie or ".cookies.json"
+    browser = BrowserController(headless=headless, cookie_file=cookie_file)
     agent = WebAgent(
         llm, browser,
         max_steps=args.max_steps,
@@ -130,6 +133,10 @@ async def run_task(task: str, args) -> str:
 
         return result
     finally:
+        try:
+            await browser.save_cookies(cookie_file)
+        except Exception:
+            pass
         await browser.close()
         await llm.close()
 

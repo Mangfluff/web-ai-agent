@@ -3,6 +3,7 @@ Browser controller module - wraps Playwright for web page interaction.
 """
 
 import asyncio
+import os
 from typing import Optional
 from playwright.async_api import async_playwright, Page, BrowserContext
 
@@ -10,8 +11,9 @@ from playwright.async_api import async_playwright, Page, BrowserContext
 class BrowserController:
     """Controls a browser instance via Playwright."""
 
-    def __init__(self, headless: bool = False):
+    def __init__(self, headless: bool = False, cookie_file: Optional[str] = None):
         self.headless = headless
+        self.cookie_file = cookie_file
         self._playwright = None
         self._browser = None
         self._context: Optional[BrowserContext] = None
@@ -32,6 +34,18 @@ class BrowserController:
                 "Chrome/125.0.0.0 Safari/537.36"
             ),
         )
+
+        # Restore cookies if available
+        if self.cookie_file and os.path.exists(self.cookie_file):
+            import json
+            try:
+                with open(self.cookie_file, "r") as f:
+                    cookies = json.load(f)
+                if cookies:
+                    await self._context.add_cookies(cookies)
+            except Exception:
+                pass
+
         self._page = await self._context.new_page()
 
     async def get_title(self) -> str:
@@ -61,6 +75,26 @@ class BrowserController:
             return True
         except Exception as e:
             raise RuntimeError(f"Failed to click '{selector}': {e}")
+
+    async def click_xpath(self, xpath: str) -> bool:
+        """Click an element identified by XPath."""
+        try:
+            locator = self._page.locator(f"xpath={xpath}")
+            await locator.click(timeout=8000)
+            await asyncio.sleep(0.5)
+            return True
+        except Exception as e:
+            raise RuntimeError(f"Failed to click XPath '{xpath}': {e}")
+
+    async def click_by_text(self, text: str) -> bool:
+        """Click an element containing specific text."""
+        try:
+            locator = self._page.locator(f"text={text}")
+            await locator.first.click(timeout=8000)
+            await asyncio.sleep(0.5)
+            return True
+        except Exception as e:
+            raise RuntimeError(f"Failed to click text '{text}': {e}")
 
     async def fill(self, selector: str, text: str, delay_ms: int = 60) -> bool:
         """Fill a form field with human-like typing delay."""
@@ -161,6 +195,24 @@ class BrowserController:
             return links
         except Exception:
             return []
+
+    async def describe_page(self) -> str:
+        """Get a textual description of the current page (better than screenshot for LLM)."""
+        parts = []
+        parts.append(f"URL: {await self.get_url()}")
+        parts.append(f"Title: {await self.get_title()}")
+        text = await self.get_page_text()
+        parts.append(f"Content:\n{text[:3000]}")
+        return "\n".join(parts)
+
+    async def save_cookies(self, filepath: str):
+        """Save current cookies to a JSON file."""
+        if not self._context:
+            return
+        cookies = await self._context.cookies()
+        import json
+        with open(filepath, "w") as f:
+            json.dump(cookies, f, indent=2)
 
     async def close(self):
         """Close the browser."""

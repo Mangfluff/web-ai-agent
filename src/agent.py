@@ -2,6 +2,7 @@
 AI Agent core - drives the browser using LLM decision-making (ReAct loop).
 """
 
+import asyncio
 import json
 import re
 import os
@@ -22,25 +23,40 @@ Available actions (respond with raw JSON, no markdown):
   - Navigate to a URL. Include the protocol (https://).
 
 {"action": "click", "selector": "<css_selector>"}
-  - Click an element on the page. Use simple selectors like tag, #id, .class, or [attr="value"].
+  - Click an element by CSS selector. Use tag, #id, .class, or [attr="value"].
+
+{"action": "click_xpath", "xpath": "<xpath_expression>"}
+  - Click an element by XPath. Use when CSS selector fails.
+
+{"action": "click_text", "text": "<visible_text>"}
+  - Click an element by its visible text content. Good for buttons and links.
 
 {"action": "fill", "selector": "<css_selector>", "text": "<text>"}
   - Type text into an input/textarea field.
+
+{"action": "check", "selector": "<css_selector>"}
+  - Check a checkbox or select a radio button.
+
+{"action": "uncheck", "selector": "<css_selector>"}
+  - Uncheck a checkbox.
+
+{"action": "select", "selector": "<css_selector>", "value": "<option_value>"}
+  - Select an option from a dropdown/select element.
 
 {"action": "press", "key": "<key_name>"}
   - Press a keyboard key: "Enter", "Escape", "ArrowDown", "Tab".
 
 {"action": "extract"}
-  - Extract the current page text content and report what you find.
+  - Extract the current page text content. Use this to read what's on the page.
 
 {"action": "scroll", "direction": "down", "amount": 500}
-  - Scroll the page. direction: "down", "up", "bottom", "top". amount: pixels (default 500).
-
-{"action": "select", "selector": "<css_selector>", "value": "<option_value>"}
-  - Select an option from a dropdown/select element.
+  - Scroll the page. direction: "down", "up", "bottom", "top". amount: pixels.
 
 {"action": "wait", "ms": <milliseconds>}
   - Wait for a period of time (1000 = 1 second).
+
+{"action": "describe"}
+  - Get a full summary of the current page (URL, title, content).
 
 {"action": "done", "result": "<final_answer>"}
   - Task is complete. Provide the final result to the user.
@@ -48,12 +64,12 @@ Available actions (respond with raw JSON, no markdown):
 Rules:
 1. Always respond with EXACTLY ONE JSON action, no extra text or markdown.
 2. First: navigate to a relevant starting page (Google, Wikipedia, etc.).
-3. Then: use "extract" to read the page content before making decisions.
-4. Use specific CSS selectors. For links, try "a", "a.some-class", or text-based selectors.
-5. If an action fails, try a different approach (different selector, navigate back, etc.).
+3. Then: use "extract" or "describe" to read the page content before making decisions.
+4. For clicking, prefer CSS selectors first, then click_text, then click_xpath as fallback.
+5. If an action fails, try a different approach (click_text, navigate back, etc.).
 6. For search tasks: navigate to the search engine, fill the search box, press Enter, examine results.
 7. When you find what you need, use "done" with a clear result summary.
-8. Always verify the page is loaded before interacting.
+8. Always verify the page is loaded before interacting. Use "wait" if needed.
 9. If stuck on a page, try navigating to a fresh starting point.
 """
 
@@ -258,65 +274,86 @@ class WebAgent:
         action_type = action.get("action", "")
 
         try:
-            match action_type:
-                case "navigate":
-                    url = action.get("url", "")
-                    if not url.startswith("http"):
-                        url = "https://" + url
-                    title = await self.browser.navigate(url)
-                    return f"Navigated to {url}. Page title: {title}"
+            if action_type == "navigate":
+                url = action.get("url", "")
+                if not url.startswith("http"):
+                    url = "https://" + url
+                title = await self.browser.navigate(url)
+                return f"Navigated to {url}. Page title: {title}"
 
-                case "click":
-                    selector = action.get("selector", "")
-                    await self.browser.click(selector)
-                    url = await self.browser.get_url()
-                    return f"Clicked '{selector}'. Current URL: {url}"
+            elif action_type == "click":
+                selector = action.get("selector", "")
+                await self.browser.click(selector)
+                url = await self.browser.get_url()
+                return f"Clicked '{selector}'. Current URL: {url}"
 
-                case "fill":
-                    selector = action.get("selector", "")
-                    text = action.get("text", "")
-                    await self.browser.fill(selector, text)
-                    return f"Filled '{selector}' with text."
+            elif action_type == "click_xpath":
+                xpath = action.get("xpath", "")
+                await self.browser.click_xpath(xpath)
+                url = await self.browser.get_url()
+                return f"Clicked XPath '{xpath}'. Current URL: {url}"
 
-                case "press":
-                    key = action.get("key", "Enter")
-                    await self.browser.press_key(key)
-                    return f"Pressed key: {key}"
+            elif action_type == "click_text":
+                text = action.get("text", "")
+                await self.browser.click_by_text(text)
+                url = await self.browser.get_url()
+                return f"Clicked text '{text}'. Current URL: {url}"
 
-                case "extract":
-                    page_info = await self._get_page_state()
-                    return (
-                        f"URL: {page_info['url']}\n"
-                        f"Title: {page_info['title']}\n"
-                        f"Content:\n{page_info['text'][:2000]}"
-                    )
+            elif action_type == "fill":
+                selector = action.get("selector", "")
+                text = action.get("text", "")
+                await self.browser.fill(selector, text)
+                return f"Filled '{selector}' with text."
 
-                case "scroll":
-                    direction = action.get("direction", "down")
-                    amount = action.get("amount", 500)
-                    await self.browser.scroll(direction, amount)
-                    return f"Scrolled {direction}."
+            elif action_type == "check":
+                selector = action.get("selector", "")
+                await self.browser.check(selector)
+                return f"Checked '{selector}'."
 
-                case "select":
-                    selector = action.get("selector", "")
-                    value = action.get("value", "")
-                    await self.browser.select_option(selector, value)
-                    return f"Selected '{value}' in '{selector}'."
+            elif action_type == "uncheck":
+                selector = action.get("selector", "")
+                await self.browser.uncheck(selector)
+                return f"Unchecked '{selector}'."
 
-                case "wait":
-                    ms = action.get("ms", 1000)
-                    import asyncio as _asyncio
-                    await _asyncio.sleep(ms / 1000)
-                    return f"Waited {ms}ms."
+            elif action_type == "press":
+                key = action.get("key", "Enter")
+                await self.browser.press_key(key)
+                return f"Pressed key: {key}"
 
-                case "screenshot":
-                    return "Screenshot captured (visual analysis not available in text mode). Use 'extract' to read page content."
+            elif action_type == "extract":
+                page_info = await self._get_page_state()
+                return (
+                    f"URL: {page_info['url']}\n"
+                    f"Title: {page_info['title']}\n"
+                    f"Content:\n{page_info['text'][:2000]}"
+                )
 
-                case "done":
-                    return action.get("result", "Done")
+            elif action_type == "describe":
+                desc = await self.browser.describe_page()
+                return desc[:3000]
 
-                case _:
-                    return f"Unknown action: {action_type}"
+            elif action_type == "scroll":
+                direction = action.get("direction", "down")
+                amount = action.get("amount", 500)
+                await self.browser.scroll(direction, amount)
+                return f"Scrolled {direction}."
+
+            elif action_type == "select":
+                selector = action.get("selector", "")
+                value = action.get("value", "")
+                await self.browser.select_option(selector, value)
+                return f"Selected '{value}' in '{selector}'."
+
+            elif action_type == "wait":
+                ms = action.get("ms", 1000)
+                await asyncio.sleep(ms / 1000)
+                return f"Waited {ms}ms."
+
+            elif action_type == "done":
+                return action.get("result", "Done")
+
+            else:
+                return f"Unknown action: {action_type}"
 
         except Exception as e:
             return f"Error executing {action_type}: {e}"
